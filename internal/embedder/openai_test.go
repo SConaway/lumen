@@ -206,6 +206,24 @@ func TestOpenAIEmbedder_BearerHeaderWhenKeySet(t *testing.T) {
 	}
 }
 
+func TestOpenAIEmbedder_TrailingV1InBaseURLNotDoubled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("expected path /v1/embeddings, got %q (base URL's /v1 must not be duplicated)", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(makeOpenAIResponse([][]float32{{0.1, 0.2}}))
+	}))
+	defer server.Close()
+
+	e, err := NewOpenAI("m", 2, server.URL+"/v1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Embed(context.Background(), []string{"hello"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenAIEmbedder_RetriesOn429(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

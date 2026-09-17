@@ -31,7 +31,7 @@ import (
 func ProbeServer(ctx context.Context, srv config.ServerConfig) error {
 	endpoint := strings.TrimRight(srv.Host, "/") + "/api/tags"
 	if srv.Backend == config.BackendLMStudio || srv.Backend == config.BackendOpenAI {
-		endpoint = strings.TrimRight(srv.Host, "/") + "/v1/models"
+		endpoint = normalizeBaseURL(srv.Host) + "/v1/models"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

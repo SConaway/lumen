@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sethvargo/go-retry"
@@ -38,7 +39,9 @@ type OpenAI struct {
 }
 
 // NewOpenAI creates a new OpenAI-compatible embedder.
-// baseURL is the API base URL (e.g. "https://api.openai.com").
+// baseURL is the API base URL (e.g. "https://api.openai.com", or
+// "https://api.openai.com/v1" — a trailing "/v1" is stripped so callers
+// following either convention don't end up with "/v1/v1/embeddings").
 // apiKey is the Bearer token for authentication; when empty, no
 // Authorization header is sent, since some internal gateways trust network
 // position rather than a token.
@@ -46,12 +49,21 @@ func NewOpenAI(model string, dimensions int, baseURL string, apiKey string) (*Op
 	return &OpenAI{
 		model:      model,
 		dimensions: dimensions,
-		baseURL:    baseURL,
+		baseURL:    normalizeBaseURL(baseURL),
 		apiKey:     apiKey,
 		client: &http.Client{
 			Timeout: 10 * time.Minute,
 		},
 	}, nil
+}
+
+// normalizeBaseURL strips a trailing slash and a trailing "/v1" so the
+// embed/health-probe code can append "/v1/..." exactly once regardless of
+// whether the configured host already includes the version prefix.
+func normalizeBaseURL(raw string) string {
+	trimmed := strings.TrimRight(raw, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/v1")
+	return strings.TrimRight(trimmed, "/")
 }
 
 // Dimensions returns the embedding vector dimensionality.
