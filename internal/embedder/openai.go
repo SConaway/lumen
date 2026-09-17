@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/sethvargo/go-retry"
@@ -155,14 +154,28 @@ func (o *OpenAI) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 		return nil, fmt.Errorf("embed request to %s: %w", o.baseURL, err)
 	}
 
-	// Sort by index — OpenAI spec allows out-of-order responses.
-	slices.SortFunc(embedResp.Data, func(a, b openaiEmbedItem) int {
-		return a.Index - b.Index
-	})
-
-	vecs := make([][]float32, len(embedResp.Data))
-	for i, item := range embedResp.Data {
-		vecs[i] = item.Embedding
+	// The OpenAI spec allows out-of-order responses but guarantees one item
+	// per input, indexed 0..len(texts)-1. Validate that explicitly instead of
+	// trusting response order/length — a misbehaving gateway that drops,
+	// duplicates, or mis-sizes an item must fail loudly rather than silently
+	// misalign embeddings with their source texts.
+	if len(embedResp.Data) != len(texts) {
+		return nil, fmt.Errorf("embed response: got %d embeddings, want %d", len(embedResp.Data), len(texts))
+	}
+	vecs := make([][]float32, len(texts))
+	seen := make([]bool, len(texts))
+	for _, item := range embedResp.Data {
+		if item.Index < 0 || item.Index >= len(texts) {
+			return nil, fmt.Errorf("embed response: index %d out of range [0,%d)", item.Index, len(texts))
+		}
+		if seen[item.Index] {
+			return nil, fmt.Errorf("embed response: duplicate index %d", item.Index)
+		}
+		if len(item.Embedding) != o.dimensions {
+			return nil, fmt.Errorf("embed response: item %d has %d dimensions, want %d", item.Index, len(item.Embedding), o.dimensions)
+		}
+		seen[item.Index] = true
+		vecs[item.Index] = item.Embedding
 	}
 	return vecs, nil
 }

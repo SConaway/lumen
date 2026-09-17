@@ -595,6 +595,18 @@ func TestValidation_InvalidHost(t *testing.T) {
 	}
 }
 
+func TestValidation_APIKeyRequiresHTTPS(t *testing.T) {
+	for _, k := range []string{"LUMEN_BACKEND", "LUMEN_EMBED_MODEL", "OLLAMA_HOST", "LM_STUDIO_HOST", "OPENAI_API_KEY", "OPENAI_BASE_URL", "LUMEN_EMBED_DIMS", "LUMEN_EMBED_CTX"} {
+		t.Setenv(k, "")
+	}
+	dir := t.TempDir()
+	f := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(f, []byte(`servers: [{backend: openai, host: "http://insecure:1234", model: text-embedding-3-small, dims: 1536, api_key: sk-test}]`), 0644)
+	if _, err := NewConfigService(f); err == nil {
+		t.Fatal("expected error: api_key over plain http must fail validation")
+	}
+}
+
 func TestValidation_MissingModel(t *testing.T) {
 	for _, k := range []string{"LUMEN_BACKEND", "LUMEN_EMBED_MODEL", "OLLAMA_HOST", "LM_STUDIO_HOST", "LUMEN_EMBED_DIMS", "LUMEN_EMBED_CTX"} {
 		t.Setenv(k, "")

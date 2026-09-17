@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -490,6 +491,16 @@ func (s *ConfigService) ServersForModel(model string) ([]int, error) {
 	return indices, nil
 }
 
+// isLoopbackHost reports whether host is "localhost" or a loopback IP,
+// exempting local dev/test gateways from the api_key-requires-https rule.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // validate checks the current configuration for correctness.
 // Must be called either on a ConfigService that has not yet been shared with
 // other goroutines, or on a temporary ConfigService (as in reload). Must not
@@ -522,6 +533,9 @@ func (s *ConfigService) validate() error {
 		}
 		if srv.APIKey != "" && srv.Backend != BackendOpenAI {
 			return fmt.Errorf("config: servers[%d]: api_key is only supported for the %q backend, got %q", i, BackendOpenAI, srv.Backend)
+		}
+		if srv.APIKey != "" && u.Scheme != "https" && !isLoopbackHost(u.Hostname()) {
+			return fmt.Errorf("config: servers[%d]: api_key requires an https host (or loopback for local testing), got %q", i, srv.Host)
 		}
 		if s.serverDims(i) == 0 {
 			return fmt.Errorf("config: servers[%d]: cannot resolve dims for model %q — set dims explicitly", i, srv.Model)

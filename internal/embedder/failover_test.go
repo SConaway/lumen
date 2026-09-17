@@ -70,6 +70,7 @@ func testConfigService(t *testing.T, servers ...config.ServerConfig) *config.Con
 	t.Setenv("LM_STUDIO_HOST", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("LUMEN_EMBED_SKIP_HEALTH_CHECK", "")
 
 	y := "servers:\n"
 	for _, s := range servers {

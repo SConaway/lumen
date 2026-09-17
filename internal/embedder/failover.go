@@ -140,6 +140,12 @@ func (f *FailoverEmbedder) Embed(ctx context.Context, texts []string) ([][]float
 			return result, nil
 		}
 
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Caller cancellation or deadline expiration, not a server
+			// problem — don't mark the active server unhealthy or failover.
+			return nil, ctxErr
+		}
+
 		if !isTransientError(err) {
 			return nil, err // 4xx = config error, don't failover
 		}
