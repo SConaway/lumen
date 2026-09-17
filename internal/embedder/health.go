@@ -30,13 +30,16 @@ import (
 // as a healthy failover target.
 func ProbeServer(ctx context.Context, srv config.ServerConfig) error {
 	endpoint := strings.TrimRight(srv.Host, "/") + "/api/tags"
-	if srv.Backend == config.BackendLMStudio {
+	if srv.Backend == config.BackendLMStudio || srv.Backend == config.BackendOpenAI {
 		endpoint = strings.TrimRight(srv.Host, "/") + "/v1/models"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("create health request: %w", err)
+	}
+	if srv.Backend == config.BackendOpenAI && srv.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+srv.APIKey)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -63,7 +66,7 @@ func ProbeServer(ctx context.Context, srv config.ServerConfig) error {
 		for _, model := range body.Models {
 			available = append(available, model.Name, model.Model)
 		}
-	case config.BackendLMStudio:
+	case config.BackendLMStudio, config.BackendOpenAI:
 		var body struct {
 			Data []struct {
 				ID string `json:"id"`

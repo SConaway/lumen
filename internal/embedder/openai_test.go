@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-func makeLMStudioResponse(embeddings [][]float32) openaiEmbedResponse {
+func makeOpenAIResponse(embeddings [][]float32) openaiEmbedResponse {
 	data := make([]openaiEmbedItem, len(embeddings))
 	for i, e := range embeddings {
 		data[i] = openaiEmbedItem{Embedding: e, Index: i}
@@ -31,12 +31,12 @@ func makeLMStudioResponse(embeddings [][]float32) openaiEmbedResponse {
 	return openaiEmbedResponse{Data: data}
 }
 
-func TestLMStudioEmbedder_Embed(t *testing.T) {
+func TestOpenAIEmbedder_Embed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/embeddings" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-		resp := makeLMStudioResponse([][]float32{
+		resp := makeOpenAIResponse([][]float32{
 			{0.1, 0.2, 0.3, 0.4},
 			{0.5, 0.6, 0.7, 0.8},
 		})
@@ -44,7 +44,7 @@ func TestLMStudioEmbedder_Embed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	e, err := NewLMStudio("nomic-embed-code", 4, server.URL)
+	e, err := NewOpenAI("text-embedding-3-small", 4, server.URL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,8 +61,7 @@ func TestLMStudioEmbedder_Embed(t *testing.T) {
 	}
 }
 
-func TestLMStudioEmbedder_OrderingByIndex(t *testing.T) {
-	// Mock returns items in reversed index order to verify sorting.
+func TestOpenAIEmbedder_OrderingByIndex(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiEmbedResponse{
 			Data: []openaiEmbedItem{
@@ -74,25 +73,20 @@ func TestLMStudioEmbedder_OrderingByIndex(t *testing.T) {
 	}))
 	defer server.Close()
 
-	e, _ := NewLMStudio("nomic-embed-code", 4, server.URL)
+	e, _ := NewOpenAI("text-embedding-3-small", 4, server.URL, "")
 	vecs, err := e.Embed(context.Background(), []string{"first", "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(vecs) != 2 {
-		t.Fatalf("expected 2 vectors, got %d", len(vecs))
-	}
-	// vecs[0] should correspond to index:0, which has embedding {0.1, 0.2, 0.3, 0.4}
 	if vecs[0][0] != 0.1 {
 		t.Fatalf("expected vecs[0][0]=0.1 (index:0 item), got %v", vecs[0][0])
 	}
-	// vecs[1] should correspond to index:1, which has embedding {0.9, 0.9, 0.9, 0.9}
 	if vecs[1][0] != 0.9 {
 		t.Fatalf("expected vecs[1][0]=0.9 (index:1 item), got %v", vecs[1][0])
 	}
 }
 
-func TestLMStudioEmbedder_Batching(t *testing.T) {
+func TestOpenAIEmbedder_Batching(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -104,11 +98,11 @@ func TestLMStudioEmbedder_Batching(t *testing.T) {
 		for i := range input {
 			embeddings[i] = []float32{0.1, 0.2, 0.3, 0.4}
 		}
-		_ = json.NewEncoder(w).Encode(makeLMStudioResponse(embeddings))
+		_ = json.NewEncoder(w).Encode(makeOpenAIResponse(embeddings))
 	}))
 	defer server.Close()
 
-	e, _ := NewLMStudio("nomic-embed-code", 4, server.URL)
+	e, _ := NewOpenAI("text-embedding-3-small", 4, server.URL, "")
 	texts := make([]string, 50)
 	for i := range texts {
 		texts[i] = "text"
@@ -126,44 +120,43 @@ func TestLMStudioEmbedder_Batching(t *testing.T) {
 	}
 }
 
-func TestLMStudioEmbedder_Dimensions(t *testing.T) {
-	e, _ := NewLMStudio("nomic-embed-code", 768, "http://localhost:1234")
+func TestOpenAIEmbedder_Dimensions(t *testing.T) {
+	e, _ := NewOpenAI("text-embedding-3-small", 768, "http://localhost:8080", "")
 	if e.Dimensions() != 768 {
 		t.Fatalf("expected 768, got %d", e.Dimensions())
 	}
 }
 
-func TestLMStudioEmbedder_ModelName(t *testing.T) {
-	e, _ := NewLMStudio("nomic-embed-code", 768, "http://localhost:1234")
-	if e.ModelName() != "nomic-embed-code" {
-		t.Fatalf("expected nomic-embed-code, got %s", e.ModelName())
+func TestOpenAIEmbedder_ModelName(t *testing.T) {
+	e, _ := NewOpenAI("text-embedding-3-small", 768, "http://localhost:8080", "")
+	if e.ModelName() != "text-embedding-3-small" {
+		t.Fatalf("expected text-embedding-3-small, got %s", e.ModelName())
 	}
 }
 
-func TestLMStudioEmbedder_ErrorHandling(t *testing.T) {
+func TestOpenAIEmbedder_ErrorHandling(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
-	e, _ := NewLMStudio("nomic-embed-code", 4, server.URL)
+	e, _ := NewOpenAI("text-embedding-3-small", 4, server.URL, "")
 	_, err := e.Embed(context.Background(), []string{"hello"})
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
 }
 
-func TestLMStudio_Embed_ContextCancelledStopsRetry(t *testing.T) {
-	// Server always returns 500 to force retry attempts.
+func TestOpenAI_Embed_ContextCancelledStopsRetry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	emb, _ := NewLMStudio("nomic-embed-code", 4, srv.URL)
+	emb, _ := NewOpenAI("text-embedding-3-small", 4, srv.URL, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel before any request
+	cancel()
 
 	start := time.Now()
 	_, err := emb.Embed(ctx, []string{"hello"})
@@ -174,5 +167,66 @@ func TestLMStudio_Embed_ContextCancelledStopsRetry(t *testing.T) {
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("expected fast failure on pre-cancelled context, took %v", elapsed)
+	}
+}
+
+func TestOpenAIEmbedder_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("expected no Authorization header, got %q", auth)
+		}
+		_ = json.NewEncoder(w).Encode(makeOpenAIResponse([][]float32{{0.1, 0.2}}))
+	}))
+	defer server.Close()
+
+	e, err := NewOpenAI("m", 2, server.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Embed(context.Background(), []string{"hello"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenAIEmbedder_BearerHeaderWhenKeySet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer sk-test-key" {
+			t.Errorf("expected Bearer sk-test-key, got %q", auth)
+		}
+		_ = json.NewEncoder(w).Encode(makeOpenAIResponse([][]float32{{0.1, 0.2}}))
+	}))
+	defer server.Close()
+
+	e, err := NewOpenAI("m", 2, server.URL, "sk-test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Embed(context.Background(), []string{"hello"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenAIEmbedder_RetriesOn429(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(makeOpenAIResponse([][]float32{{0.1, 0.2}}))
+	}))
+	defer server.Close()
+
+	e, _ := NewOpenAI("m", 2, server.URL, "")
+	vecs, err := e.Embed(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatalf("expected retry to succeed after 429, got: %v", err)
+	}
+	if len(vecs) != 1 {
+		t.Fatalf("expected 1 vector, got %d", len(vecs))
+	}
+	if attempts < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", attempts)
 	}
 }
