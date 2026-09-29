@@ -46,15 +46,38 @@ type OpenAI struct {
 // Authorization header is sent, since some internal gateways trust network
 // position rather than a token.
 func NewOpenAI(model string, dimensions int, baseURL string, apiKey string) (*OpenAI, error) {
+	client := &http.Client{Timeout: 10 * time.Minute}
+	if apiKey != "" {
+		client.CheckRedirect = refuseHTTPSDowngrade
+	}
 	return &OpenAI{
 		model:      model,
 		dimensions: dimensions,
 		baseURL:    normalizeBaseURL(baseURL),
 		apiKey:     apiKey,
-		client: &http.Client{
-			Timeout: 10 * time.Minute,
-		},
+		client:     client,
 	}, nil
+}
+
+// maxRedirects mirrors net/http's default limit, which a custom
+// CheckRedirect replaces.
+const maxRedirects = 10
+
+// refuseHTTPSDowngrade is the redirect policy for requests carrying a bearer
+// token. net/http forwards Authorization on same-host redirects regardless of
+// scheme, so following an https→http hop would send the token in plaintext
+// and bypass the config-time https requirement. Plain http origins (loopback
+// gateways) are unaffected.
+func refuseHTTPSDowngrade(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	for _, prev := range via {
+		if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect from https to %s", req.URL.Redacted())
+		}
+	}
+	return nil
 }
 
 // normalizeBaseURL strips a trailing slash and a trailing "/v1" so the

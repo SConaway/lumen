@@ -180,13 +180,13 @@ func (f *FailoverEmbedder) serversChanged() bool {
 		return true
 	}
 	for i, srv := range current {
-		if f.servers[i].emb == nil {
-			continue // not initialized yet, can't compare
-		}
 		// Compare the whole struct (all fields are comparable) so that any
 		// config change — including ones added after this comparison was
 		// first written, like APIKey or SkipHealthCheck — forces a
 		// re-init instead of silently keeping a stale cached embedder.
+		// Servers without an embedder are compared too: a primary that
+		// failed its probe must be retried once its config is corrected,
+		// even while a healthy fallback is active.
 		if f.cachedConfigs[i] != srv {
 			return true
 		}

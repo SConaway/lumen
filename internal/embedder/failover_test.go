@@ -323,7 +323,7 @@ func TestFailover_ReloadPicksUpNewServers(t *testing.T) {
 	if err := os.WriteFile(cfgFile, []byte(fmt.Sprintf("servers:\n  - backend: ollama\n    host: %s\n    model: test\n    dims: 3\n  - backend: ollama\n    host: %s\n    model: test\n    dims: 3\n", down.URL, up.URL)), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	waitForReload(t, cfg, func(s []config.ServerConfig) bool { return len(s) == 2 })
 
 	// serversChanged() now detects the config reload automatically
 	_, err = fe.Embed(context.Background(), []string{"hello"})
@@ -468,7 +468,7 @@ servers:
 
 	// Hot reload rotates only api_key — backend/host/model are unchanged.
 	writeCfg("new-key")
-	time.Sleep(500 * time.Millisecond)
+	waitForReload(t, cfg, func(s []config.ServerConfig) bool { return s[0].APIKey == "new-key" })
 
 	if _, err := fe.Embed(context.Background(), []string{"hello"}); err != nil {
 		t.Fatalf("Embed after reload: %v", err)
@@ -880,5 +880,125 @@ func TestFailover_DimensionsTriggersInit(t *testing.T) {
 	// Before any Embed() call, Dimensions() should return the healthy server's dims.
 	if got := fe.Dimensions(); got != 768 {
 		t.Errorf("Dimensions() = %d, want 768 (should eagerly init and pick healthy server)", got)
+	}
+}
+
+// waitForReload blocks until the watched config reflects a hot reload, as
+// observed through cond, instead of guessing how long fsnotify takes.
+func waitForReload(t *testing.T, cfg *config.ConfigService, cond func([]config.ServerConfig) bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond(cfg.Servers()) {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for config reload")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestFailover_ReloadReinitializesFailedServers guards against serversChanged()
+// skipping servers whose embedder was never initialized: a primary that failed
+// its first probe must be picked up again once its config is corrected, both
+// while a healthy fallback is active and when every server started unhealthy.
+func TestFailover_ReloadReinitializesFailedServers(t *testing.T) {
+	for _, k := range []string{"LUMEN_BACKEND", "LUMEN_EMBED_MODEL", "LUMEN_EMBED_DIMS", "LUMEN_EMBED_CTX", "OLLAMA_HOST", "LM_STUDIO_HOST", "OPENAI_API_KEY", "OPENAI_BASE_URL", "LUMEN_EMBED_SKIP_HEALTH_CHECK"} {
+		t.Setenv(k, "")
+	}
+
+	// The primary serves only the "good-key" token and never implements
+	// /v1/models when modelsMissing is set, so a probe against it fails until
+	// the config is corrected.
+	newPrimary := func(t *testing.T, modelsMissing bool) *httptest.Server {
+		t.Helper()
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer good-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			switch {
+			case r.URL.Path == "/v1/models" && !modelsMissing:
+				_, _ = fmt.Fprint(w, `{"data":[{"id":"test-openai"}]}`)
+			case r.URL.Path == "/v1/embeddings":
+				_, _ = fmt.Fprint(w, `{"data":[{"embedding":[0.1,0.2,0.3]}]}`)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+	}
+
+	tests := []struct {
+		name          string
+		modelsMissing bool
+		before, after string // primary server YAML fragment
+		fixed         func(config.ServerConfig) bool
+	}{
+		{
+			name:   "corrected api key",
+			before: "api_key: bad-key",
+			after:  "api_key: good-key",
+			fixed:  func(s config.ServerConfig) bool { return s.APIKey == "good-key" },
+		},
+		{
+			name:          "enabled skip_health_check",
+			modelsMissing: true,
+			before:        "api_key: good-key",
+			after:         "api_key: good-key\n    skip_health_check: true",
+			fixed:         func(s config.ServerConfig) bool { return s.SkipHealthCheck },
+		},
+	}
+	for _, tt := range tests {
+		for _, withFallback := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/fallback=%t", tt.name, withFallback), func(t *testing.T) {
+				primary := newPrimary(t, tt.modelsMissing)
+				defer primary.Close()
+				fallback := newTestOllamaServer(t, true, 200)
+				defer fallback.Close()
+
+				cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+				writeCfg := func(primaryExtra string) {
+					t.Helper()
+					content := fmt.Sprintf("servers:\n  - backend: openai\n    host: %s\n    model: test-openai\n    dims: 3\n    %s\n", primary.URL, primaryExtra)
+					if withFallback {
+						content += fmt.Sprintf("  - backend: ollama\n    host: %s\n    model: test\n    dims: 3\n", fallback.URL)
+					}
+					if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil {
+						t.Fatalf("WriteFile: %v", err)
+					}
+				}
+				writeCfg(tt.before)
+
+				cfg, err := config.NewConfigService(cfgFile)
+				if err != nil {
+					t.Fatalf("NewConfigService: %v", err)
+				}
+				if err := cfg.Watch(); err != nil {
+					t.Fatalf("Watch: %v", err)
+				}
+				defer cfg.Stop()
+
+				fe := NewFailoverEmbedder(cfg)
+				_, err = fe.Embed(context.Background(), []string{"hello"})
+				if withFallback {
+					if err != nil {
+						t.Fatalf("Embed via fallback: %v", err)
+					}
+					if got := fe.ActiveServerIndex(); got != 1 {
+						t.Fatalf("active = %d, want fallback 1", got)
+					}
+				} else if err == nil {
+					t.Fatal("expected error while the only server is misconfigured")
+				}
+
+				writeCfg(tt.after)
+				waitForReload(t, cfg, func(s []config.ServerConfig) bool { return tt.fixed(s[0]) })
+
+				if _, err := fe.Embed(context.Background(), []string{"hello"}); err != nil {
+					t.Fatalf("Embed after reload: %v", err)
+				}
+				if got := fe.ActiveServerIndex(); got != 0 {
+					t.Errorf("active = %d, want corrected primary 0", got)
+				}
+			})
+		}
 	}
 }

@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -246,5 +248,65 @@ func TestOpenAIEmbedder_RetriesOn429(t *testing.T) {
 	}
 	if attempts < 2 {
 		t.Fatalf("expected at least 2 attempts, got %d", attempts)
+	}
+}
+
+// TestOpenAIEmbedder_AuthenticatedRedirects guards the bearer token against
+// redirect-based downgrades: net/http forwards Authorization on same-host
+// redirects regardless of scheme, so an https→http hop would leak the key in
+// plaintext despite config validation requiring an https host.
+func TestOpenAIEmbedder_AuthenticatedRedirects(t *testing.T) {
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		plainHits.Add(1)
+		_ = json.NewEncoder(w).Encode(makeOpenAIResponse([][]float32{{0.1, 0.2, 0.3}}))
+	}))
+	defer plain.Close()
+
+	var target atomic.Value
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/final" {
+			if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
+				t.Errorf("Authorization = %q, want Bearer sk-test", got)
+			}
+			_ = json.NewEncoder(w).Encode(makeOpenAIResponse([][]float32{{0.1, 0.2, 0.3}}))
+			return
+		}
+		http.Redirect(w, r, target.Load().(string), http.StatusTemporaryRedirect)
+	}))
+	defer secure.Close()
+
+	tests := []struct {
+		name    string
+		target  string
+		wantErr string
+	}{
+		{name: "https to http downgrade is refused", target: plain.URL + "/v1/embeddings", wantErr: "refusing redirect"},
+		{name: "https to https is followed", target: secure.URL + "/final"},
+		{name: "redirect limit is retained", target: secure.URL + "/v1/embeddings", wantErr: "stopped after 10 redirects"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target.Store(tt.target)
+			plainHits.Store(0)
+
+			emb, err := NewOpenAI("test-model", 3, secure.URL, "sk-test")
+			if err != nil {
+				t.Fatalf("NewOpenAI: %v", err)
+			}
+			emb.client.Transport = secure.Client().Transport
+
+			_, err = emb.Embed(context.Background(), []string{"hello"})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Embed: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Embed error = %v, want containing %q", err, tt.wantErr)
+			}
+			if n := plainHits.Load(); n != 0 {
+				t.Errorf("plaintext destination contacted %d times, want 0", n)
+			}
+		})
 	}
 }
