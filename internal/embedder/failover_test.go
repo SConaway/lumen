@@ -408,6 +408,43 @@ func TestFailover_OpenAIBackend_SkipHealthCheck(t *testing.T) {
 	}
 }
 
+// TestFailover_SkipHealthCheckIgnoredForNonOpenAI guards against the
+// OpenAI-only skip_health_check escape hatch leaking to other backends: an
+// Ollama or LM Studio server with the flag set must still be probed, so a
+// down service is never marked healthy.
+func TestFailover_SkipHealthCheckIgnoredForNonOpenAI(t *testing.T) {
+	for _, backend := range []string{config.BackendOllama, config.BackendLMStudio} {
+		t.Run(backend, func(t *testing.T) {
+			// Embedding endpoints work but health endpoints fail, so Embed
+			// only succeeds if the probe was (wrongly) skipped.
+			probes := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/embed":
+					_, _ = fmt.Fprint(w, `{"embeddings":[[0.1,0.2,0.3]]}`)
+				case "/v1/embeddings":
+					_, _ = fmt.Fprint(w, `{"data":[{"embedding":[0.1,0.2,0.3]}]}`)
+				default:
+					probes++
+					w.WriteHeader(http.StatusServiceUnavailable)
+				}
+			}))
+			defer srv.Close()
+
+			cfg := testConfigService(t,
+				config.ServerConfig{Backend: backend, Host: srv.URL, Model: "test-model", Dims: 3, SkipHealthCheck: true},
+			)
+			fe := NewFailoverEmbedder(cfg)
+			if _, err := fe.Embed(context.Background(), []string{"hello"}); err == nil {
+				t.Fatal("Embed succeeded against an unavailable server; skip_health_check must not apply to " + backend)
+			}
+			if probes == 0 {
+				t.Error("expected health probe to run for " + backend)
+			}
+		})
+	}
+}
+
 // TestFailover_ReloadPicksUpAPIKeyChange guards against serversChanged()
 // comparing only backend/host/model: rotating api_key or skip_health_check
 // via a config hot reload — with backend/host/model unchanged — must still

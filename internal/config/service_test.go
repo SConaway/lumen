@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -907,5 +908,26 @@ func TestWithServerSelection_EmptyArgsNoop(t *testing.T) {
 	}
 	if got := len(svc.Servers()); got != 3 {
 		t.Errorf("Servers() len = %d, want 3 (no filter should be applied)", got)
+	}
+}
+
+func TestServerConfig_SkipsHealthCheck(t *testing.T) {
+	tests := []struct {
+		backend string
+		skip    bool
+		want    bool
+	}{
+		{BackendOpenAI, true, true},
+		{BackendOpenAI, false, false},
+		{BackendOllama, true, false},
+		{BackendLMStudio, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s/%v", tt.backend, tt.skip), func(t *testing.T) {
+			s := ServerConfig{Backend: tt.backend, SkipHealthCheck: tt.skip}
+			if got := s.SkipsHealthCheck(); got != tt.want {
+				t.Errorf("SkipsHealthCheck() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

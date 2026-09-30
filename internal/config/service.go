@@ -32,6 +32,13 @@ type ServerConfig struct {
 	SkipHealthCheck bool    `koanf:"skip_health_check"`
 }
 
+// SkipsHealthCheck reports whether health probes should be bypassed for this
+// server. skip_health_check is an escape hatch for OpenAI-compatible gateways
+// that do not implement /v1/models, so it is ignored for other backends.
+func (s ServerConfig) SkipsHealthCheck() bool {
+	return s.SkipHealthCheck && s.Backend == BackendOpenAI
+}
+
 // ConfigService wraps koanf and provides typed config access.
 type ConfigService struct {
 	k             *koanf.Koanf

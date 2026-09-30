@@ -248,7 +248,7 @@ func (f *FailoverEmbedder) probeHealth(ctx context.Context, i int) bool {
 		return false
 	}
 	srv := servers[i]
-	if srv.SkipHealthCheck {
+	if srv.SkipsHealthCheck() {
 		return true
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
